@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>NVevaAce</title>
+
+  <!-- ⚡ favicon -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22 fill=%22white%22>⚫</text></svg>">
+
+  <style>
+    body {
+      margin:0;
+      background:#000;
+      color:#fff;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    #splash {
+      position:fixed;
+      inset:0;
+      background:#000;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:24px;
+      letter-spacing:4px;
+      z-index:999;
+    }
+
+    #app {
+      max-width: 720px;
+      margin: auto;
+      padding: 40px 20px;
+      display:none;
+    }
+
+    h1 {
+      font-size: 16px;
+      font-weight: 500;
+      color:#888;
+      margin-bottom: 20px;
+      letter-spacing: 2px;
+    }
+
+    #chat { min-height: 60vh; }
+
+    .msg {
+      margin: 16px 0;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .user { color:#aaa; }
+    .bot { color:#fff; }
+
+    .typing::after {
+      content: "|";
+      margin-left:4px;
+      animation: blink 1s infinite;
+    }
+
+    @keyframes blink { 50% { opacity: 0; } }
+
+    #controls {
+      display:flex;
+      gap:10px;
+      border-top:1px solid #222;
+      padding-top:20px;
+      margin-top:20px;
+    }
+
+    input {
+      flex:1;
+      background:#000;
+      border:none;
+      border-bottom:1px solid #333;
+      color:#fff;
+      padding:10px;
+      outline:none;
+    }
+
+    button {
+      background:#fff;
+      color:#000;
+      border:none;
+      padding:10px 14px;
+      cursor:pointer;
+    }
+
+    select {
+      background:#000;
+      color:#666;
+      border:1px solid #222;
+      padding:5px;
+      margin-bottom:20px;
+    }
+
+    /* 💀 loading */
+    #loading {
+      color:#666;
+      font-size:12px;
+      margin-top:5px;
+      opacity:0;
+      transition:0.2s;
+    }
+  </style>
+</head>
+
+<body>
+
+<!-- 🖤 开屏动画 -->
+<div id="splash"></div>
+
+<div id="app">
+  <h1>NVevaAce</h1>
+
+  <select id="persona">
+    <option value="assistant">assistant</option>
+    <option value="dark">dark</option>
+    <option value="rage">rage</option>
+  </select>
+
+  <div id="chat"></div>
+  <div id="loading">AI is thinking...</div>
+
+  <div id="controls">
+    <input id="input" placeholder="..." />
+    <button onclick="send()">→</button>
+    <button onclick="startVoice()">🎤</button>
+  </div>
+</div>
+
+<script>
+// 🖤 开屏打字
+const splash = document.getElementById("splash");
+const titleText = "NVevaAce";
+let i = 0;
+
+function splashTyping() {
+  if (i < titleText.length) {
+    splash.innerHTML += titleText[i];
+    i++;
+    setTimeout(splashTyping, 120);
+  } else {
+    setTimeout(() => {
+      splash.style.display = "none";
+      document.getElementById("app").style.display = "block";
+      input.focus();
+    }, 500);
+  }
+}
+
+splashTyping();
+
+let messages = [];
+
+const personas = {
+  assistant: "You are a precise and minimal assistant.",
+  dark: "Cold, minimal, slightly dark tone.",
+  rage: "Short, sharp, slightly aggressive."
+};
+
+const input = document.getElementById("input");
+const loading = document.getElementById("loading");
+
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter") send();
+});
+
+function startVoice() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return alert("Use Chrome");
+
+  const recognition = new SpeechRecognition();
+  recognition.lang = "zh-CN";
+  recognition.start();
+
+  recognition.onresult = (e) => {
+    input.value = e.results[0][0].transcript;
+    send();
+  };
+}
+
+async function send() {
+  const chat = document.getElementById("chat");
+  const persona = document.getElementById("persona").value;
+
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+
+  messages = [
+    { role: "system", content: personas[persona] },
+    ...messages,
+    { role: "user", content: text }
+  ];
+
+  chat.innerHTML += `<div class="msg user">${text}</div>`;
+
+  loading.style.opacity = 1; // 💀 thinking
+
+  const res = await fetch("/chat", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ messages })
+  });
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+
+  let botDiv = document.createElement("div");
+  botDiv.className = "msg bot typing";
+  chat.appendChild(botDiv);
+
+  let fullText = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    loading.style.opacity = 0;
+
+    const chunk = decoder.decode(value);
+    fullText += chunk;
+
+    botDiv.textContent = fullText;
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  botDiv.classList.remove("typing");
+}
+</script>
+
+</body>
+</html>
