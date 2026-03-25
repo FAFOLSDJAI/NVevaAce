@@ -1,0 +1,34 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '6.0.x'
+      - name: Restore
+        run: dotnet restore NVevaAce/NVevaAce.csproj
+      - name: Build & Publish
+        run: |
+          dotnet publish NVevaAce/NVevaAce.csproj -c Release -r win-x64 \
+            /p:PublishSingleFile=true \
+            /p:IncludeAllContentForSelfExtract=true \
+            -o publish
+      - name: Zip Release
+        run: Compress-Archive -Path publish/* -DestinationPath NVevaAce.zip
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "v${{ github.run_number }}"
+          name: "Release v${{ github.run_number }}"
+          files: NVevaAce.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

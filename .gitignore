@@ -1,0 +1,19 @@
+# Visual Studio files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build results
+bin/
+obj/
+
+# NuGet packages
+*.nupkg
+*.snupkg
+
+# VS Code settings
+.vscode/
+
+# Logs
+logs/
