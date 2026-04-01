@@ -1,6 +1,8 @@
 using System;
 using System.ComponentModel;
 using System.Drawing;
+using System.IO;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace NVevaAce
@@ -12,6 +14,7 @@ namespace NVevaAce
         private Label lblPort;
         private RichTextBox txtLog;
         private bool isRunning = false;
+        private TunnelManager _tunnelManager;
 
         public MainForm()
         {
@@ -75,7 +78,7 @@ namespace NVevaAce
             }
         }
 
-        private void StartTunnel()
+        private async void StartTunnel()
         {
             // 读取配置
             var config = System.IO.File.ReadAllText("appsettings.json");
@@ -89,20 +92,42 @@ namespace NVevaAce
             }
 
             Log($"准备启动内网穿透，本地端口: {port}");
-            // 这里应该是实际的隧道启动逻辑
-            // 由于这是一个示例实现，我们只模拟启动过程
-            isRunning = true;
-            btnStartStop.Text = "停止内网穿透";
-            Log("内网穿透已启动（模拟）");
+            try
+            {
+                // 解析配置
+                var configObj = SimpleJson.DeserializeObject(config);
+                string remoteHost = configObj.RemoteHost;
+                int remotePort = (int)configObj.RemotePort;
+
+                Log($"准备启动内网穿透，本地端口: {port} -> {remoteHost}:{remotePort}");
+                // 创建隧道管理器
+                _tunnelManager = new TunnelManager(new FormLogger(this));
+                _tunnelManager.StartTunnel(port, remoteHost, remotePort);
+                isRunning = true;
+                btnStartStop.Text = "停止内网穿透";
+                Log("内网穿透已启动");
+            }
+            catch (Exception ex)
+            {
+                Log($"启动隧道失败: {ex.Message}");
+                MessageBox.Show($"启动隧道失败: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void StopTunnel()
         {
             Log("正在停止内网穿透...");
-            // 这里应该是实际的隧道停止逻辑
-            isRunning = false;
-            btnStartStop.Text = "启动内网穿透";
-            Log("内网穿透已停止");
+            try
+            {
+                _tunnelManager?.StopTunnel();
+                isRunning = false;
+                btnStartStop.Text = "启动内网穿透";
+                Log("内网穿透已停止");
+            }
+            catch (Exception ex)
+            {
+                Log($"停止隧道时出错: {ex.Message}");
+            }
         }
 
         private void Log(string message)
@@ -111,6 +136,26 @@ namespace NVevaAce
             txtLog.AppendText($"[{timestamp}] {message}{Environment.NewLine}");
             txtLog.SelectionStart = txtLog.TextLength;
             txtLog.ScrollToCaret();
+        }
+
+        private class FormLogger : ILogger
+        {
+            private readonly MainForm _form;
+            public FormLogger(MainForm form)
+            {
+                _form = form;
+            }
+            public void Log(string message)
+            {
+                if (_form.InvokeRequired)
+                {
+                    _form.Invoke(new Action(() => _form.Log(message)));
+                }
+                else
+                {
+                    _form.Log(message);
+                }
+            }
         }
     }
 }
