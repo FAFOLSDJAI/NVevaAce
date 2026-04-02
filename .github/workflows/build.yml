@@ -16,11 +16,7 @@ jobs:
       - name: Restore
         run: dotnet restore NVevaAce.csproj
       - name: Build & Publish
-        run: |
-          dotnet publish NVevaAce/NVevaAce.csproj -c Release -r win-x64 \
-            /p:PublishSingleFile=true \
-            /p:IncludeAllContentForSelfExtract=true \
-            -o publish
+        run: dotnet publish NVevaAce.csproj -c Release -r win-x64 /p:PublishSingleFile=true /p:IncludeAllContentForSelfExtract=true -o publish
       - name: Zip Release
         run: Compress-Archive -Path publish/* -DestinationPath NVevaAce.zip
       - name: Create Release
