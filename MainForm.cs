@@ -24,14 +24,11 @@ namespace NVevaAce
 
         private void InitializeComponent()
         {
-            this.SuspendLayout();
-            // 
-            // MainForm
-            // 
-            this.ClientSize = new System.Drawing.Size(400, 300);
-            this.Name = "MainForm";
-            this.Text = "NVevaAce - 内网穿透工具";
-            this.ResumeLayout(false);
+        this.SuspendLayout();
+        this.ClientSize = new System.Drawing.Size(400, 300);
+        this.Name = "MainForm";
+        this.Text = "NVevaAce - 内网穿透工具";
+        this.ResumeLayout(false);
         }
 
         private void InitializeUI()
