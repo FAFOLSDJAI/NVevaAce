@@ -43,13 +43,89 @@ namespace NVevaAce
             LoadConfiguration();
         }
 
+        private void LoadConfiguration()
+        {
+            try
+            {
+                if (!File.Exists("appsettings.json"))
+                {
+                    _logger.Log("appsettings.json not found, using default values");
+                    return;
+                }
+
+                var json = File.ReadAllText("appsettings.json");
+                var config = SimpleJson.DeserializeObject(json);
+                var dict = (System.Collections.Generic.IDictionary<string, object>)config;
+
+                // 读取基本配置
+                if (dict.TryGetValue("RemoteHost", out var remoteHost))
+                    _remoteHost = remoteHost?.ToString() ?? "tunnel.example.com";
+
+                if (dict.TryGetValue("RemotePort", out var remotePort))
+                    _remotePort = remotePort != null ? Convert.ToInt32(remotePort) : 443;
+
+                if (dict.TryGetValue("Protocol", out var protocol))
+                    _protocol = protocol?.ToString() ?? "tcp";
+
+                if (dict.TryGetValue("AuthToken", out var authToken))
+                    _authToken = authToken?.ToString() ?? "";
+
+                if (dict.TryGetValue("UseEncryption", out var useEncryption))
+                    _useEncryption = useEncryption != null && Convert.ToBoolean(useEncryption);
+
+                if (dict.TryGetValue("LogLevel", out var logLevel))
+                    _logLevel = logLevel?.ToString() ?? "Info";
+
+                if (dict.TryGetValue("HttpHost", out var httpHost))
+                    _httpHost = httpHost?.ToString() ?? "";
+
+                if (dict.TryGetValue("HttpPath", out var httpPath))
+                    _httpPath = httpPath?.ToString() ?? "/";
+
+                if (dict.TryGetValue("HeartbeatTimeout", out var heartbeatTimeout))
+                    _heartbeatTimeout = heartbeatTimeout != null ? Convert.ToInt32(heartbeatTimeout) : 60;
+
+                if (dict.TryGetValue("PoolCount", out var poolCount))
+                    _poolCount = poolCount != null ? Convert.ToInt32(poolCount) : 5;
+
+                if (dict.TryGetValue("User", out var user))
+                    _user = user?.ToString() ?? "";
+
+                if (dict.TryGetValue("Token", out var token))
+                    _token = token?.ToString() ?? "";
+
+                if (dict.TryGetValue("DisableLogColor", out var disableLogColor))
+                    _disableLogColor = disableLogColor != null && Convert.ToBoolean(disableLogColor);
+
+                _logger.Log("Configuration loaded successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"Failed to load configuration: {ex.Message}");
+                // 设置默认值
+                _remoteHost = "tunnel.example.com";
+                _remotePort = 443;
+                _protocol = "tcp";
+                _authToken = "";
+                _useEncryption = false;
+                _logLevel = "Info";
+                _httpHost = "";
+                _httpPath = "/";
+                _heartbeatTimeout = 60;
+                _poolCount = 5;
+                _user = "";
+                _token = "";
+                _disableLogColor = false;
+            }
+        }
+
         public void StartTunnel(int localPort)
         {
             lock (_lock)
             {
                 if (_isRunning)
                 {
-                    _logger.Log("隧道已在运行�?);
+                    _logger.Log("隧道已在运行�?);
                     return;
                 }
 
@@ -62,7 +138,7 @@ namespace NVevaAce
                     _localListener.Start();
 
                     _isRunning = true;
-                    _logger.Log($"开始监听本地端�?{localPort}");
+                    _logger.Log($"开始监听本地端�?{localPort}");
 
                     // 启接受连接的任务
                     var acceptTask = Task.Run(() => AcceptClientsAsync(_cts.Token), _cts.Token);
@@ -93,13 +169,13 @@ namespace NVevaAce
 
                 try
                 {
-                    // 取消所有操�?
+                    // 取消所有操�?
                     _cts.Cancel();
 
                     // 停止监听
                     _localListener?.Stop();
 
-                    // 等待所有任务完成（最�?秒）
+                    // 等待所有任务完成（最�?秒）
                     Task.WhenAll(_runningTasks.ToArray()).Wait(TimeSpan.FromSeconds(5));
 
                     // 清理资源
@@ -110,7 +186,7 @@ namespace NVevaAce
                 }
                 catch (Exception ex)
                 {
-                    _logger.Log($"停止隧道时出�? {ex.Message}");
+                    _logger.Log($"停止隧道时出�? {ex.Message}");
                 }
                 finally
                 {
@@ -131,8 +207,8 @@ namespace NVevaAce
                         client = await _localListener.AcceptTcpClientAsync().ConfigureAwait(false);
                         if (!ct.IsCancellationRequested)
                         {
-                            _logger.Log($"接受客户端连�? {client.Client.RemoteEndPoint}");
-                            // 为每个连接创建处理任�?
+                            _logger.Log($"接受客户端连�? {client.Client.RemoteEndPoint}");
+                            // 为每个连接创建处理任�?
                             var handleTask = Task.Run(() => HandleClientAsync(client, ct), ct);
                             _runningTasks.Add(handleTask);
                         }
@@ -149,7 +225,7 @@ namespace NVevaAce
                     {
                         if (!ct.IsCancellationRequested)
                         {
-                            _logger.Log($"接受连接时出�? {ex.Message}");
+                            _logger.Log($"接受连接时出�? {ex.Message}");
                         }
                     }
                 }
@@ -195,8 +271,8 @@ namespace NVevaAce
                 _logger.Log($"建立隧道: {client.Client.RemoteEndPoint} <-> {remoteHost}:{remotePort}");
 
                 // 双向数据传输
-                var clientToRemote = CopyStreamAsync(clientStream, remoteStream, ct, "客户�?-> 远程");
-                var remoteToClient = CopyStreamAsync(remoteStream, clientStream, ct, "远程 -> 客户�?);
+                var clientToRemote = CopyStreamAsync(clientStream, remoteStream, ct, "客户�?-> 远程");
+                var remoteToClient = CopyStreamAsync(remoteStream, clientStream, ct, "远程 -> 客户�?);
 
                 await Task.WhenAll(clientToRemote, remoteToClient).ConfigureAwait(false);
             }
@@ -213,13 +289,13 @@ namespace NVevaAce
             }
             finally
             {
-                // 安全关闭所有流和连�?
+                // 安全关闭所有流和连�?
                 clientStream?.Dispose();
                 remoteStream?.Dispose();
                 client?.Dispose();
                 remoteClient?.Dispose();
 
-                _logger.Log($"连接已关�? {client?.Client?.RemoteEndPoint}");
+                _logger.Log($"连接已关�? {client?.Client?.RemoteEndPoint}");
             }
         }
 
@@ -264,7 +340,7 @@ namespace NVevaAce
             _cts.Dispose();
         }
 
-        // 简单的JSON解析器（避免额外依赖�?
+        // 简单的JSON解析器（避免额外依赖�?
         private static class SimpleJson
         {
             public static object DeserializeObject(string json)
