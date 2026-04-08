@@ -36,6 +36,7 @@ namespace NVevaAce
         private string _token;
         private bool _disableLogColor;
         private readonly ConcurrentDictionary<string, TcpClient> _clientPool = new ConcurrentDictionary<string, TcpClient>();
+        private readonly List<TunnelConfig> _tunnels = new List<TunnelConfig>();
 
         public TunnelManager(ILogger logger)
         {
@@ -102,7 +103,7 @@ namespace NVevaAce
             catch (Exception ex)
             {
                 _logger.Log($"Failed to load configuration: {ex.Message}");
-                // 设置默认值
+                // 设置默认�?
                 _remoteHost = "tunnel.example.com";
                 _remotePort = 443;
                 _protocol = "tcp";
@@ -125,7 +126,7 @@ namespace NVevaAce
             {
                 if (_isRunning)
                 {
-                    _logger.Log("隧道已在运行�?);
+                    _logger.Log("隧道已在运行�?);
                     return;
                 }
 
@@ -138,7 +139,7 @@ namespace NVevaAce
                     _localListener.Start();
 
                     _isRunning = true;
-                    _logger.Log($"开始监听本地端�?{localPort}");
+                    _logger.Log($"开始监听本地端�?{localPort}");
 
                     // 启接受连接的任务
                     var acceptTask = Task.Run(() => AcceptClientsAsync(_cts.Token), _cts.Token);
@@ -169,13 +170,13 @@ namespace NVevaAce
 
                 try
                 {
-                    // 取消所有操�?
+                    // 取消所有操�?
                     _cts.Cancel();
 
                     // 停止监听
                     _localListener?.Stop();
 
-                    // 等待所有任务完成（最�?秒）
+                    // 等待所有任务完成（最�?秒）
                     Task.WhenAll(_runningTasks.ToArray()).Wait(TimeSpan.FromSeconds(5));
 
                     // 清理资源
@@ -186,7 +187,7 @@ namespace NVevaAce
                 }
                 catch (Exception ex)
                 {
-                    _logger.Log($"停止隧道时出�? {ex.Message}");
+                    _logger.Log($"停止隧道时出�? {ex.Message}");
                 }
                 finally
                 {
@@ -207,8 +208,8 @@ namespace NVevaAce
                         client = await _localListener.AcceptTcpClientAsync().ConfigureAwait(false);
                         if (!ct.IsCancellationRequested)
                         {
-                            _logger.Log($"接受客户端连�? {client.Client.RemoteEndPoint}");
-                            // 为每个连接创建处理任�?
+                            _logger.Log($"接受客户端连�? {client.Client.RemoteEndPoint}");
+                            // 为每个连接创建处理任�?
                             var handleTask = Task.Run(() => HandleClientAsync(client, ct), ct);
                             _runningTasks.Add(handleTask);
                         }
@@ -225,7 +226,7 @@ namespace NVevaAce
                     {
                         if (!ct.IsCancellationRequested)
                         {
-                            _logger.Log($"接受连接时出�? {ex.Message}");
+                            _logger.Log($"接受连接时出�? {ex.Message}");
                         }
                     }
                 }
@@ -271,8 +272,8 @@ namespace NVevaAce
                 _logger.Log($"建立隧道: {client.Client.RemoteEndPoint} <-> {remoteHost}:{remotePort}");
 
                 // 双向数据传输
-                var clientToRemote = CopyStreamAsync(clientStream, remoteStream, ct, "客户�?-> 远程");
-                var remoteToClient = CopyStreamAsync(remoteStream, clientStream, ct, "远程 -> 客户�?);
+                var clientToRemote = CopyStreamAsync(clientStream, remoteStream, ct, "客户�?-> 远程");
+                var remoteToClient = CopyStreamAsync(remoteStream, clientStream, ct, "远程 -> 客户�?);
 
                 await Task.WhenAll(clientToRemote, remoteToClient).ConfigureAwait(false);
             }
@@ -289,13 +290,13 @@ namespace NVevaAce
             }
             finally
             {
-                // 安全关闭所有流和连�?
+                // 安全关闭所有流和连�?
                 clientStream?.Dispose();
                 remoteStream?.Dispose();
                 client?.Dispose();
                 remoteClient?.Dispose();
 
-                _logger.Log($"连接已关�? {client?.Client?.RemoteEndPoint}");
+                _logger.Log($"连接已关�? {client?.Client?.RemoteEndPoint}");
             }
         }
 
@@ -340,7 +341,19 @@ namespace NVevaAce
             _cts.Dispose();
         }
 
-        // 简单的JSON解析器（避免额外依赖�?
+        // 隧道配置�?
+        public class TunnelConfig
+        {
+            public int LocalPort { get; set; }
+            public int RemotePort { get; set; }
+            public string Protocol { get; set; } = "tcp";
+            public string AuthToken { get; set; } = "";
+            public bool UseEncryption { get; set; } = false;
+            public int HeartbeatTimeout { get; set; } = 60;
+            public int PoolCount { get; set; } = 1;
+        }
+
+        // 简单的JSON解析器（避免额外依赖�?
         private static class SimpleJson
         {
             public static object DeserializeObject(string json)
