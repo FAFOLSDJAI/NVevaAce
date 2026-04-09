@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -19,7 +19,7 @@ namespace NVevaAce
         private readonly ILogger _logger;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private readonly List<Task> _runningTasks = new List<Task>();
-        private readonly Dictionary<int, TcpListener> _localListeners = new Dictionary<int, TcpListener>();
+        private TcpListener _localListener;
         private bool _isRunning = false;
         private readonly object _lock = new object();
         private string _remoteHost;
@@ -36,7 +36,7 @@ namespace NVevaAce
         private string _token;
         private bool _disableLogColor;
         private readonly ConcurrentDictionary<string, TcpClient> _clientPool = new ConcurrentDictionary<string, TcpClient>();
-        private readonly List<TunnelConfig> _tunnels = new List<TunnelConfig>;
+        private readonly List<TunnelConfig> _tunnels = new List<TunnelConfig>();
 
         public TunnelManager(ILogger logger)
         {
@@ -58,7 +58,7 @@ namespace NVevaAce
                 var config = SimpleJson.DeserializeObject(json);
                 var dict = (System.Collections.Generic.IDictionary<string, object>)config;
 
-                // 读取基本配置
+                // 璇诲彇鍩烘湰閰嶇疆
                 if (dict.TryGetValue("RemoteHost", out var remoteHost))
                     _remoteHost = remoteHost?.ToString() ?? "tunnel.example.com";
 
@@ -103,7 +103,7 @@ namespace NVevaAce
             catch (Exception ex)
             {
                 _logger.Log($"Failed to load configuration: {ex.Message}");
-                // 设置默认�?
+                // 璁剧疆榛樿鍊?
                 _remoteHost = "tunnel.example.com";
                 _remotePort = 443;
                 _protocol = "tcp";
@@ -120,13 +120,13 @@ namespace NVevaAce
             }
         }
 
-        public void StartTunnel()
+        public void StartTunnel(int localPort)
         {
             lock (_lock)
             {
                 if (_isRunning)
                 {
-                    _logger.Log("隧道已在运行�?);
+                    _logger.Log("闅ч亾宸插湪杩愯锟?);
                     return;
                 }
 
@@ -135,30 +135,21 @@ namespace NVevaAce
                     _cts.Dispose();
                     _cts = new CancellationTokenSource();
 
-                    // 从配置中加载所有隧道
-                    LoadTunnelsFromConfig();
-
-                    foreach (var tunnel in _tunnels)
-                    {
-                        var listener = new TcpListener(IPAddress.Any, tunnel.LocalPort);
-                        listener.Start();
-                        _localListeners[tunnel.LocalPort] = listener;
-                        _logger.Log($"开始监听本地端口 {tunnel.LocalPort}");
-                    }
+                    _localListener = new TcpListener(IPAddress.Any, localPort);
+                    _localListener.Start();
 
                     _isRunning = true;
+                    _logger.Log($"寮€濮嬬洃鍚湰鍦扮锟?{localPort}");
 
-                    // 为每个隧道启动接受连接的任务
-                    foreach (var tunnel in _tunnels)
-                    {
-                        var acceptTask = Task.Run(() => AcceptClientsAsync(tunnel.LocalPort, _cts.Token), _cts.Token);
-                        _runningTasks.Add(acceptTask);
-                        _logger.Log($"内网穿透已启动: 本地端口 {tunnel.LocalPort} -> {tunnel.RemotePort} ({tunnel.Protocol})");
-                    }
+                    // 鍚帴鍙楄繛鎺ョ殑浠诲姟
+                    var acceptTask = Task.Run(() => AcceptClientsAsync(_cts.Token), _cts.Token);
+                    _runningTasks.Add(acceptTask);
+
+                    _logger.Log($"鍐呯綉绌块€忓凡鍚姩: 鏈湴绔彛 {localPort} -> {remoteHost}:{remotePort}");
                 }
                 catch (Exception ex)
                 {
-                    _logger.Log($"启动隧道失败: {ex.Message}");
+                    _logger.Log($"鍚姩闅ч亾澶辫触: {ex.Message}");
                     StopTunnel();
                     throw;
                 }
@@ -175,28 +166,28 @@ namespace NVevaAce
                 }
 
                 _isRunning = false;
-                _logger.Log("正在停止内网穿�?..");
+                _logger.Log("姝ｅ湪鍋滄鍐呯綉绌匡拷?..");
 
                 try
                 {
-                    // 取消所有操�?
+                    // 鍙栨秷鎵€鏈夋搷锟?
                     _cts.Cancel();
 
-                    // 停止监听
+                    // 鍋滄鐩戝惉
                     _localListener?.Stop();
 
-                    // 等待所有任务完成（最�?秒）
+                    // 绛夊緟鎵€鏈変换鍔″畬鎴愶紙鏈€锟?绉掞級
                     Task.WhenAll(_runningTasks.ToArray()).Wait(TimeSpan.FromSeconds(5));
 
-                    // 清理资源
+                    // 娓呯悊璧勬簮
                     _localListener = null;
                     _runningTasks.Clear();
 
-                    _logger.Log("内网穿透已停止");
+                    _logger.Log("鍐呯綉绌块€忓凡鍋滄");
                 }
                 catch (Exception ex)
                 {
-                    _logger.Log($"停止隧道时出�? {ex.Message}");
+                    _logger.Log($"鍋滄闅ч亾鏃跺嚭锟? {ex.Message}");
                 }
                 finally
                 {
@@ -217,8 +208,8 @@ namespace NVevaAce
                         client = await _localListener.AcceptTcpClientAsync().ConfigureAwait(false);
                         if (!ct.IsCancellationRequested)
                         {
-                            _logger.Log($"接受客户端连�? {client.Client.RemoteEndPoint}");
-                            // 为每个连接创建处理任�?
+                            _logger.Log($"鎺ュ彈瀹㈡埛绔繛锟? {client.Client.RemoteEndPoint}");
+                            // 涓烘瘡涓繛鎺ュ垱寤哄鐞嗕换锟?
                             var handleTask = Task.Run(() => HandleClientAsync(client, ct), ct);
                             _runningTasks.Add(handleTask);
                         }
@@ -235,7 +226,7 @@ namespace NVevaAce
                     {
                         if (!ct.IsCancellationRequested)
                         {
-                            _logger.Log($"接受连接时出�? {ex.Message}");
+                            _logger.Log($"鎺ュ彈杩炴帴鏃跺嚭锟? {ex.Message}");
                         }
                     }
                 }
@@ -244,12 +235,12 @@ namespace NVevaAce
             {
                 if (!ct.IsCancellationRequested)
                 {
-                    _logger.Log($"接受连接循环异常: {ex.Message}");
+                    _logger.Log($"鎺ュ彈杩炴帴寰幆寮傚父: {ex.Message}");
                 }
             }
             finally
             {
-                // 从运行任务列表中移除接受任务
+                // 浠庤繍琛屼换鍔″垪琛ㄤ腑绉婚櫎鎺ュ彈浠诲姟
                 lock (_lock)
                 {
                     _runningTasks.RemoveAll(t => t.IsCompleted);
@@ -265,47 +256,47 @@ namespace NVevaAce
 
             try
             {
-                // 读取配置
+                // 璇诲彇閰嶇疆
                 var config = System.IO.File.ReadAllText("appsettings.json");
                 dynamic configObj = SimpleJson.DeserializeObject(config);
                 string remoteHost = configObj.RemoteHost;
                 int remotePort = (int)configObj.RemotePort;
 
-                // 连接到远程服务器
+                // 杩炴帴鍒拌繙绋嬫湇鍔″櫒
                 remoteClient = new TcpClient();
                 await remoteClient.ConnectAsync(remoteHost, remotePort).ConfigureAwait(false);
 
                 clientStream = client.GetStream();
                 remoteStream = remoteClient.GetStream();
 
-                _logger.Log($"建立隧道: {client.Client.RemoteEndPoint} <-> {remoteHost}:{remotePort}");
+                _logger.Log($"寤虹珛闅ч亾: {client.Client.RemoteEndPoint} <-> {remoteHost}:{remotePort}");
 
-                // 双向数据传输
-                var clientToRemote = CopyStreamAsync(clientStream, remoteStream, ct, "客户�?-> 远程");
-                var remoteToClient = CopyStreamAsync(remoteStream, clientStream, ct, "远程 -> 客户�?);
+                // 鍙屽悜鏁版嵁浼犺緭
+                var clientToRemote = CopyStreamAsync(clientStream, remoteStream, ct, "瀹㈡埛锟?-> 杩滅▼");
+                var remoteToClient = CopyStreamAsync(remoteStream, clientStream, ct, "杩滅▼ -> 瀹㈡埛锟?);
 
                 await Task.WhenAll(clientToRemote, remoteToClient).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // 正常取消
+                // 姝ｅ父鍙栨秷
             }
             catch (Exception ex)
             {
                 if (!ct.IsCancellationRequested)
                 {
-                    _logger.Log($"处理客户端时出错: {ex.Message}");
+                    _logger.Log($"澶勭悊瀹㈡埛绔椂鍑洪敊: {ex.Message}");
                 }
             }
             finally
             {
-                // 安全关闭所有流和连�?
+                // 瀹夊叏鍏抽棴鎵€鏈夋祦鍜岃繛锟?
                 clientStream?.Dispose();
                 remoteStream?.Dispose();
                 client?.Dispose();
                 remoteClient?.Dispose();
 
-                _logger.Log($"连接已关�? {client?.Client?.RemoteEndPoint}");
+                _logger.Log($"杩炴帴宸插叧锟? {client?.Client?.RemoteEndPoint}");
             }
         }
 
@@ -329,17 +320,17 @@ namespace NVevaAce
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // 正常取消
+                // 姝ｅ父鍙栨秷
             }
             catch (IOException) when (ct.IsCancellationRequested)
             {
-                // 连接可能已被对方关闭
+                // 杩炴帴鍙兘宸茶瀵规柟鍏抽棴
             }
             catch (Exception ex)
             {
                 if (!ct.IsCancellationRequested)
                 {
-                    _logger.Log($"{direction} 数据传输错误: {ex.Message}");
+                    _logger.Log($"{direction} 鏁版嵁浼犺緭閿欒: {ex.Message}");
                 }
             }
         }
@@ -350,7 +341,7 @@ namespace NVevaAce
             _cts.Dispose();
         }
 
-        // 隧道配置�?
+        // 闅ч亾閰嶇疆绫?
         public class TunnelConfig
         {
             public int LocalPort { get; set; }
@@ -362,23 +353,23 @@ namespace NVevaAce
             public int PoolCount { get; set; } = 1;
         }
 
-        // 简单的JSON解析器（避免额外依赖�?
+        // 绠€鍗曠殑JSON瑙ｆ瀽鍣紙閬垮厤棰濆渚濊禆锟?
         private static class SimpleJson
         {
             public static object DeserializeObject(string json)
             {
-                // 非常简单的实现，只处理我们需要的键值对
+                // 闈炲父绠€鍗曠殑瀹炵幇锛屽彧澶勭悊鎴戜滑闇€瑕佺殑閿€煎
                 var result = new System.Dynamic.ExpandoObject();
                 var dict = (System.Collections.Generic.IDictionary<string, object>)result;
 
-                // 移除空白和大括号
+                // 绉婚櫎绌虹櫧鍜屽ぇ鎷彿
                 json = json.Trim();
                 if (json.StartsWith("{") && json.EndsWith("}"))
                 {
                     json = json.Substring(1, json.Length - 2);
                 }
 
-                // 分割键值对
+                // 鍒嗗壊閿€煎
                 var pairs = json.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                 foreach (var pair in pairs)
                 {
@@ -388,7 +379,7 @@ namespace NVevaAce
                         var key = keyValue[0].Trim().Trim('"', ' ');
                         var value = keyValue[1].Trim();
 
-                        // 处理数�?
+                        // 澶勭悊鏁帮拷?
                         if (int.TryParse(value, out int intValue))
                         {
                             dict[key] = intValue;
