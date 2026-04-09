@@ -4,96 +4,77 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Net.Security;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Security.Authentication;
-using System.IO.Compression;
 
 namespace NVevaAce
 {
     /// <summary>
     /// 隧道管理器 - 负责管理所有隧道连接
-    /// 参考 frp 的 C/S 架构设计
+    /// 参考 frp 的 C/S 架构设计，实现控制连接与工作连接分离
     /// </summary>
     public class TunnelManager : IDisposable
     {
         private readonly ILogger _logger;
         private readonly AppConfig _config;
-        private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+        
+        // 修正 1: 去掉 readonly，因为重连时需要 new
+        private CancellationTokenSource _cts = new CancellationTokenSource();
+        
         private readonly List<Task> _runningTasks = new List<Task>();
         private readonly Dictionary<int, TcpListener> _localListeners = new Dictionary<int, TcpListener>();
-        private readonly ConcurrentDictionary<string, TcpClient> _clientPool = new ConcurrentDictionary<string, TcpClient>();
-        
         private bool _isRunning = false;
         private readonly object _lock = new object();
-        private TcpListener? _localListener;
+        
+        // 新增：控制连接管理器
+        private ControlConnection? _controlConnection;
+        private HealthChecker? _healthChecker;
+        
         private int _heartbeatCount = 0;
-        private readonly int _heartbeatInterval = 30; // 秒
-        private readonly int _heartbeatTimeout = 90;  // 秒
+        private readonly int _heartbeatInterval = 30;
+        private readonly int _heartbeatTimeout = 90;
         private DateTime _lastHeartbeatTime = DateTime.Now;
 
         public TunnelManager(ILogger logger, AppConfig? config = null)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _config = config ?? AppConfig.Load();
-            InitializePool();
         }
 
-        /// <summary>
-        /// 初始化连接池
-        /// </summary>
-        private void InitializePool()
-        {
-            var poolSize = _config.PoolCount;
-            _logger.Log($"初始化连接池，大小：{poolSize}");
-        }
-
-        /// <summary>
-        /// 从配置文件加载隧道配置
-        /// </summary>
-        private List<TunnelConfig> LoadTunnelsFromConfig()
-        {
-            return _config.Tunnels;
-        }
-
-        /// <summary>
-        /// 启动隧道服务
-        /// </summary>
         public void StartTunnel()
         {
             lock (_lock)
             {
-                if (_isRunning)
-                {
-                    _logger.Log("隧道已在运行");
-                    return;
-                }
-
+                if (_isRunning) return;
+                
                 try
                 {
-                    _cts.Dispose();
+                    // 修正 2: 确保清理旧的信号源
+                    _cts?.Cancel();
+                    _cts?.Dispose();
                     _cts = new CancellationTokenSource();
                     
-                    var tunnels = LoadTunnelsFromConfig();
+                    // 初始化控制连接
+                    _controlConnection = new ControlConnection(_logger, _config);
                     
+                    var tunnels = _config.Tunnels;
                     foreach (var tunnel in tunnels)
                     {
                         var listener = new TcpListener(IPAddress.Any, tunnel.LocalPort);
                         listener.Start();
                         _localListeners[tunnel.LocalPort] = listener;
-                        _localListener = listener;
                         _logger.Log($"开始监听本地端口 {tunnel.LocalPort}");
-                        
-                        // 启动心跳检测
-                        var heartbeatTask = Task.Run(() => HeartbeatCheckAsync(_cts.Token), _cts.Token);
-                        _runningTasks.Add(heartbeatTask);
+
+                        // 修正 3: 必须启动接受连接的任务！
+                        _runningTasks.Add(Task.Run(() => AcceptClientsAsync(tunnel.LocalPort, _cts.Token), _cts.Token));
                     }
                     
-                    _isRunning = true;
+                    // 修正 4: 全局只需要一个心跳检测
+                    _runningTasks.Add(Task.Run(() => HeartbeatCheckAsync(_cts.Token), _cts.Token));
                     StartHeartbeatTimer();
+                    
+                    _isRunning = true;
                     _logger.Log($"内网穿透已启动，共 {tunnels.Count} 个隧道");
                 }
                 catch (Exception ex)
@@ -105,9 +86,65 @@ namespace NVevaAce
             }
         }
 
-        /// <summary>
-        /// 启动心跳定时器
-        /// </summary>
+        private async Task AcceptClientsAsync(int localPort, CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    if (!_localListeners.TryGetValue(localPort, out var listener)) break;
+
+                    // 使用 AcceptTcpClientAsync 并在外面包裹括号
+                    var client = await listener.AcceptTcpClientAsync().ConfigureAwait(false);
+                    _logger.Log($"[端口 {localPort}] 接受连接：{client.Client.RemoteEndPoint}");
+
+                    // 修正 5: 启动处理任务，不要 Wait 否则会阻塞监听
+                    _ = Task.Run(() => HandleClientAsync(client, ct), ct);
+                }
+                catch (Exception ex) when (!(ex is OperationCanceledException))
+                {
+                    _logger.Log($"监听出错：{ex.Message}");
+                    await Task.Delay(1000, ct);
+                }
+            }
+        }
+
+        private async Task HandleClientAsync(TcpClient client, CancellationToken ct)
+        {
+            // 注意：这里一定要用 using 确保即便出错也能释放 Socket
+            using (client)
+            using (TcpClient remoteClient = new TcpClient())
+            {
+                try
+                {
+                    await remoteClient.ConnectAsync(_config.ServerAddr, _config.ServerPort).ConfigureAwait(false);
+                    using (var clientStream = client.GetStream())
+                    using (var remoteStream = remoteClient.GetStream())
+                    {
+                        _logger.Log($"隧道建立成功：{client.Client.RemoteEndPoint} <-> {_config.ServerAddr}");
+                        var t1 = CopyStreamAsync(clientStream, remoteStream, ct, "Up");
+                        var t2 = CopyStreamAsync(remoteStream, clientStream, ct, "Down");
+                        await Task.WhenAll(t1, t2).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Log($"传输中断：{ex.Message}");
+                }
+            }
+        }
+
+        private async Task CopyStreamAsync(Stream input, Stream output, CancellationToken ct, string direction)
+        {
+            var buffer = new byte[81920];
+            int bytesRead;
+            // 修正 6: 确保括号闭合正确
+            while ((bytesRead = await input.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false)) > 0)
+            {
+                await output.WriteAsync(buffer, 0, bytesRead, ct).ConfigureAwait(false);
+            }
+        }
+
         private void StartHeartbeatTimer()
         {
             Task.Run(async () =>
@@ -128,9 +165,6 @@ namespace NVevaAce
             }, _cts.Token);
         }
 
-        /// <summary>
-        /// 发送心跳
-        /// </summary>
         private void SendHeartbeat()
         {
             _heartbeatCount++;
@@ -138,9 +172,6 @@ namespace NVevaAce
             _logger.Log($"[心跳 #{_heartbeatCount}] 连接正常");
         }
 
-        /// <summary>
-        /// 心跳检测
-        /// </summary>
         private async Task HeartbeatCheckAsync(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)
@@ -149,7 +180,7 @@ namespace NVevaAce
                 {
                     await Task.Delay(1000, ct);
                     var timeout = DateTime.Now.AddSeconds(-_heartbeatTimeout);
-                    
+
                     if (_lastHeartbeatTime < timeout)
                     {
                         _logger.Log("心跳超时，尝试重新连接...");
@@ -164,166 +195,29 @@ namespace NVevaAce
             }
         }
 
-        /// <summary>
-        /// 停止隧道服务
-        /// </summary>
         public void StopTunnel()
         {
             lock (_lock)
             {
                 if (!_isRunning) return;
-
+                
                 _isRunning = false;
-                _logger.Log("正在停止内网穿透...");
-
-                try
-                {
-                    _cts.Cancel();
-                    
-                    foreach (var listener in _localListeners.Values)
-                    {
-                        listener.Stop();
-                    }
-                    
-                    Task.WhenAll(_runningTasks.ToArray()).Wait(TimeSpan.FromSeconds(5));
-                    
-                    _localListeners.Clear();
-                    _runningTasks.Clear();
-                    _logger.Log("内网穿透已停止");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Log($"停止隧道时出错：{ex.Message}");
-                }
-                finally
-                {
-                    _cts.Dispose();
-                }
-            }
-        }
-
-        /// <summary>
-        /// 接受客户端连接
-        /// </summary>
-        private async Task AcceptClientsAsync(int localPort, CancellationToken ct)
-        {
-            try
-            {
-                while (!ct.IsCancellationRequested)
-                {
-                    TcpClient client = null;
-                    try
-                    {
-                        if (!_localListeners.ContainsKey(localPort))
-                            break;
-                            
-                        client = await _localListeners[localPort].AcceptTcpClientAsync().ConfigureAwait(false);
-                        
-                        if (!ct.IsCancellationRequested)
-                        {
-                            _logger.Log($"接受客户端连接：{client.Client.RemoteEndPoint}");
-                            var handleTask = Task.Run(() => HandleClientAsync(client, ct), ct);
-                            _runningTasks.Add(handleTask);
-                        }
-                    }
-                    catch (SocketException) when (ct.IsCancellationRequested) { break; }
-                    catch (ObjectDisposedException) when (ct.IsCancellationRequested) { break; }
-                    catch (Exception ex)
-                    {
-                        if (!ct.IsCancellationRequested)
-                            _logger.Log($"接受连接时出错：{ex.Message}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                if (!ct.IsCancellationRequested)
-                    _logger.Log($"接受连接循环异常：{ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// 处理客户端连接
-        /// </summary>
-        private async Task HandleClientAsync(TcpClient client, CancellationToken ct)
-        {
-            TcpClient remoteClient = null;
-            NetworkStream clientStream = null;
-            NetworkStream remoteStream = null;
-
-            try
-            {
-                string remoteHost = _config.ServerAddr;
-                int remotePort = _config.ServerPort;
-
-                remoteClient = new TcpClient();
-                await remoteClient.ConnectAsync(remoteHost, remotePort).ConfigureAwait(false);
+                _cts.Cancel();
                 
-                clientStream = client.GetStream();
-                remoteStream = remoteClient.GetStream();
+                foreach (var l in _localListeners.Values) l.Stop();
+                _localListeners.Clear();
                 
-                _logger.Log($"建立隧道：{client.Client.RemoteEndPoint} <-> {remoteHost}:{remotePort}");
-
-                var clientToRemote = CopyStreamAsync(clientStream, remoteStream, ct, "客户端->远程");
-                var remoteToClient = CopyStreamAsync(remoteStream, clientStream, ct, "远程->客户端");
+                _controlConnection?.Dispose();
+                _healthChecker?.Dispose();
                 
-                await Task.WhenAll(clientToRemote, remoteToClient).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                if (!ct.IsCancellationRequested)
-                    _logger.Log($"处理客户端时出错：{ex.Message}");
-            }
-            finally
-            {
-                clientStream?.Dispose();
-                remoteStream?.Dispose();
-                client?.Dispose();
-                remoteClient?.Dispose();
-                _logger.Log($"连接已关闭：{client?.Client?.RemoteEndPoint}");
-            }
-        }
-
-        /// <summary>
-        /// 双向数据复制
-        /// </summary>
-        private async Task CopyStreamAsync(Stream input, Stream output, CancellationToken ct, string direction)
-        {
-            try
-            {
-                var buffer = new byte[81920];
-                int bytesRead;
-                
-                while ((bytesRead = await input.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false)) > 0)
-                {
-                    if (ct.IsCancellationRequested) break;
-                    
-                    await output.WriteAsync(buffer, 0, bytesRead, ct).ConfigureAwait(false);
-                    await output.FlushAsync(ct).ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-            catch (IOException) when (ct.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                if (!ct.IsCancellationRequested)
-                    _logger.Log($"{direction} 数据传输错误：{ex.Message}");
+                _logger.Log("服务已停止");
             }
         }
 
         public void Dispose()
         {
             StopTunnel();
-            _cts.Dispose();
+            _cts?.Dispose();
         }
-    }
-
-    /// <summary>
-    /// 日志接口
-    /// </summary>
-    public interface ILogger
-    {
-        void Log(string message);
     }
 }
