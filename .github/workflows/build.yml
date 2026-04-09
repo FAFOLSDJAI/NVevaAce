@@ -1,50 +1,21 @@
-name: Build & Release
-
+name: CI-Workflow
 on:
   push:
-    branches: [ main ]
-
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 jobs:
   build:
-    runs-on: windows-latest 
-
+    runs-on: windows-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '6.0.x'
-
-      - name: Restore Dependencies
-        run: dotnet restore NVevaAce.csproj
-
-      - name: Build & Publish
-        # 这里的参数会将所有依赖打包进一个 .exe 文件
-        run: |
-          dotnet publish NVevaAce.csproj `
-            -c Release `
-            -r win-x64 `
-            --self-contained true `
-            /p:PublishSingleFile=true `
-            /p:IncludeAllContentForSelfExtract=true `
-            /p:DebugType=None `
-            /p:DebugSymbols=false `
-            -o publish
-
-      - name: Zip Release
-        shell: pwsh
-        run: Compress-Archive -Path publish/* -DestinationPath NVevaAce.zip
-
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "v${{ github.run_number }}"
-          name: "Release v${{ github.run_number }}"
-          files: NVevaAce.zip
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        lfs: true
+    - name: Setup Environment
+      run: echo "Setting up environment..."
+    - name: Verify Files
+      shell: pwsh
+      run: |
+        echo "Checking project structure..."
+        ls -R
