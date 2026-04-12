@@ -170,7 +170,7 @@ namespace NVevaAce
         public int Port { get; set; }
         public int Weight { get; set; } = 1;
         public bool IsHealthy { get; set; } = true;
-        public int ActiveConnections = 0;
+        public int ActiveConnections { get; set; } = 0;
         public DateTime LastCheck { get; set; } = DateTime.Now;
 
         public string Endpoint => $"{Address}:{Port}";

@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -12,7 +13,7 @@ namespace NVevaAce
 {
     /// <summary>
     /// 隧道管理器 - 负责管理所有隧道连接
-    /// 改进版本：集成连接池、健康检查、代理协议、TCP多路复用、带宽限制、负载均衡
+    /// 改进版本：集成连接池、健康检查、代理协议、TCP多路复用、带宽限制、负载均衡、TLS加密
     /// </summary>
     public class TunnelManager : IDisposable
     {
@@ -27,13 +28,13 @@ namespace NVevaAce
         // 连接池
         private ConnectionPool? _connectionPool;
 
-        // TCP 多路复用器 (新增)
+        // TCP 多路复用器
         private TcpMultiplexer? _tcpMultiplexer;
 
-        // 带宽限制器 (新增)
+        // 带宽限制器
         private readonly Dictionary<int, BandwidthLimiter> _bandwidthLimiters = new Dictionary<int, BandwidthLimiter>();
 
-        // 负载均衡器 (新增)
+        // 负载均衡器
         private readonly Dictionary<int, LoadBalancer> _loadBalancers = new Dictionary<int, LoadBalancer>();
 
         // 健康检查器
@@ -41,6 +42,12 @@ namespace NVevaAce
 
         // 代理协议处理器
         private ProxyProtocolHandler? _protocolHandler;
+
+        // 安全连接工厂 (新增)
+        private SecureConnectionFactory? _secureConnectionFactory;
+
+        // 加密工具 (新增)
+        private CryptoUtils? _crypto;
 
         // 心跳统计
         private int _heartbeatCount = 0;
@@ -86,15 +93,34 @@ namespace NVevaAce
                     if (_config.PoolCount > 0)
                     {
                         _connectionPool = new ConnectionPool(
-                            _logger,
-                            _config.ServerAddr,
-                            _config.ServerPort,
-                            _config.PoolCount);
+                            _logger, _config.ServerAddr, _config.ServerPort, _config.PoolCount);
                         _logger.Log($"[改进] 连接池已初始化，大小: {_config.PoolCount}");
                     }
 
                     // 初始化代理协议处理器
                     _protocolHandler = new ProxyProtocolHandler(_logger, _config);
+
+                    // 初始化安全连接工厂 (新增)
+                    bool useEncryption = _config.TlsEnable || _config.Tunnels?.Any(t => t.UseEncryption) == true;
+                    if (useEncryption)
+                    {
+                        _secureConnectionFactory = new SecureConnectionFactory(
+                            _logger,
+                            _config.ServerAddr,
+                            _config.ServerPort,
+                            _config.TlsEnable,
+                            _config.Tunnels?.Any(t => t.UseEncryption) == true,
+                            _config.Token
+                        );
+
+                        // 初始化加密工具
+                        if (!string.IsNullOrEmpty(_config.Token))
+                        {
+                            _crypto = new CryptoUtils(_config.Token);
+                            var encType = _config.TlsEnable ? "TLS" : "AES-128-CFB";
+                            _logger.Log($"[加密] 已启用 {encType} 加密传输");
+                        }
+                    }
 
                     // 启动隧道
                     var tunnels = _config.Tunnels;
@@ -128,7 +154,8 @@ namespace NVevaAce
                     _runningTasks.Add(Task.Run(() => StatsReportAsync(_cts.Token), _cts.Token));
 
                     _isRunning = true;
-                    _logger.Log($"✓ 内网穿透已启动，共 {tunnels.Count} 个隧道");
+                    _logger.Log($"✓ 内网穿透已启动，共 {tunnels.Count} 个隧道" + 
+                        (useEncryption ? " [加密]" : ""));
                 }
                 catch (Exception ex)
                 {
@@ -159,7 +186,8 @@ namespace NVevaAce
             // 禁用 Nagle 算法，降低延迟
             listener.Server.NoDelay = true;
 
-            _logger.Log($"开始监听本地端口 {tunnel.LocalPort} -> 远程 {tunnel.RemotePort}");
+            _logger.Log($"开始监听本地端口 {tunnel.LocalPort} -> 远程 {tunnel.RemotePort}" +
+                (tunnel.UseEncryption ? " [加密]" : ""));
 
             // 接受客户端连接
             _runningTasks.Add(Task.Run(() => AcceptClientsAsync(tunnel, _cts.Token), _cts.Token));
@@ -188,7 +216,7 @@ namespace NVevaAce
                     if (!_localListeners.TryGetValue(tunnel.LocalPort, out var listener)) break;
 
                     var client = await listener.AcceptTcpClientAsync().ConfigureAwait(false);
-                    
+
                     // 禁用 Nagle 算法
                     client.NoDelay = true;
 
@@ -199,7 +227,7 @@ namespace NVevaAce
                     }
 
                     _logger.Log($"[端口 {tunnel.LocalPort}] 接受连接：{client.Client.RemoteEndPoint} (总计: {_totalConnections})");
-                    
+
                     _ = Task.Run(() => HandleClientAsync(client, tunnel, ct), ct);
                 }
                 catch (Exception ex) when (!(ex is OperationCanceledException))
@@ -254,21 +282,32 @@ namespace NVevaAce
 
                 // 禁用 Nagle 算法
                 remoteClient.NoDelay = true;
-
                 await remoteClient.ConnectAsync(targetAddr, targetPort).ConfigureAwait(false);
 
-                using (var clientStream = client.GetStream())
-                using (var remoteStream = remoteClient.GetStream())
-                {
-                    _logger.Log($"[隧道] {client.Client.RemoteEndPoint} -> {targetAddr}:{targetPort}");
+                // 获取基础流
+                Stream clientStream = client.GetStream();
+                Stream remoteStream = remoteClient.GetStream();
 
+                // 根据配置应用加密 (新增)
+                bool useTunnelEncryption = tunnel.UseEncryption && _crypto != null;
+                if (useTunnelEncryption)
+                {
+                    clientStream = new EncryptedStream(clientStream, _crypto, true);
+                    remoteStream = new EncryptedStream(remoteStream, _crypto, true);
+                }
+
+                using (clientStream)
+                using (remoteStream)
+                {
                     // 获取带宽限制器
                     BandwidthLimiter? limiter = null;
                     _bandwidthLimiters.TryGetValue(tunnel.LocalPort, out limiter);
 
+                    _logger.Log($"[隧道] {client.Client.RemoteEndPoint} -> {targetAddr}:{targetPort}" +
+                        (useTunnelEncryption ? " [加密]" : ""));
+
                     var t1 = CopyStreamAsync(clientStream, remoteStream, ct, "↑", limiter);
                     var t2 = CopyStreamAsync(remoteStream, clientStream, ct, "↓", limiter);
-
                     await Task.WhenAll(t1, t2).ConfigureAwait(false);
                 }
 
@@ -301,7 +340,6 @@ namespace NVevaAce
         {
             var buffer = new byte[65536];
             int bytesRead;
-
             while ((bytesRead = await input.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false)) > 0)
             {
                 // 应用带宽限制
@@ -309,7 +347,6 @@ namespace NVevaAce
                 {
                     await limiter.WaitForTokensAsync(bytesRead, ct).ConfigureAwait(false);
                 }
-
                 await output.WriteAsync(buffer, 0, bytesRead, ct).ConfigureAwait(false);
             }
         }
@@ -341,9 +378,9 @@ namespace NVevaAce
         {
             _heartbeatCount++;
             _lastHeartbeatTime = DateTime.Now;
-
             var muxStatus = _tcpMultiplexer != null ? $", TCP Mux: {_tcpMultiplexer.ActiveChannels} 通道" : "";
-            _logger.Log($"[心跳 #{_heartbeatCount}] 连接正常 | 活动连接: {_activeConnections}{muxStatus}");
+            var encStatus = _crypto != null ? ", 加密: 启用" : "";
+            _logger.Log($"[心跳 #{_heartbeatCount}] 连接正常 | 活动连接: {_activeConnections}{muxStatus}{encStatus}");
         }
 
         private async Task StatsReportAsync(CancellationToken ct)

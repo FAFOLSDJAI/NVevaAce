@@ -1,73 +1,185 @@
-# NVevaAce 每日改进报告 - 2026-04-11
+# NVevaAce 改进报告 - 2026-04-11
 
-## 改进日期
-2026-04-11
+## 执行摘要
 
-## 改进内容
+本次改进为 NVevaAce 添加了三个关键企业级功能：**TCP多路复用**、**带宽限制**和**负载均衡**，使项目功能更接近 frp。
 
-### 1. 新增：代理协议支持 (ProxyProtocol.cs)
-- **新增文件**
-- 实现与 frp 服务器的握手机制
-- 支持多种代理类型：TCP, UDP, HTTP, HTTPS, STCP, XTCP
-- 实现心跳机制（Ping/Pong）
-- 添加代理注册请求和工作连接管理
+## 分析结果
 
-### 2. 改进：TunnelManager 集成连接池和健康检查
-- **修改文件**: `TunnelManager.cs`
-- 集成 ConnectionPool 实际使用
-- 集成 HealthChecker 自动健康检查
-- 添加实时统计报告（每分钟）
-- 改进缓冲区大小（64KB）提升性能
-- 跟踪活动连接数和总连接数
+### frp 关键特性分析
+通过研究 frp 项目源码和文档，识别出以下值得实现的功能：
 
-### 3. 代码质量改进
-- 添加详细的日志标记 [改进] 标识新增功能
-- 增加异常处理和资源清理
-- 添加连接统计信息
+| 特性 | frp 实现 | 优先级 |
+|------|---------|--------|
+| TCP Stream Multiplexing | ✅ 单TCP连接多通道传输 | 高 |
+| Bandwidth Limit | ✅ 令牌桶算法限流 | 高 |
+| Load Balancing | ✅ 多种策略 | 高 |
+| TLS 加密 | ✅ | 中 |
+| UDP 支持 | ✅ | 中 |
 
-## 对比 frp 功能分析
+### NVevaAce 当前状态
+- ✅ TCP隧道、连接池、健康检查、控制连接
+- ❌ TCP多路复用未实际使用
+- ❌ 带宽限制未实现
+- ❌ 负载均衡未实现
 
-| 特性 | frp | NVevaAce (改进前) | NVevaAce (改进后) |
-|------|-----|-------------------|-------------------|
-| TCP 支持 | ✅ | ✅ | ✅ |
-| UDP 支持 | ✅ | ❌ | ❌ (待开发) |
-| HTTP 代理 | ✅ | ❌ | ❌ (待开发) |
-| P2P 模式 (XTCP) | ✅ | ❌ | ❌ (待开发) |
-| STCP 模式 | ✅ | ❌ | ❌ (待开发) |
-| 连接池 | ✅ | ✅ (未集成) | ✅ |
-| 心跳检测 | ✅ | ✅ | ✅ |
-| 健康检查 | ✅ | ❌ (未集成) | ✅ |
-| TLS 加密 | ✅ | ❌ | ❌ (待开发) |
-| 压缩支持 | ✅ | ❌ | ❌ (待开发) |
-| 代理协议握手 | ✅ | ❌ | ✅ (新增) |
+## 本次改进内容
 
-## 待改进项（优先级排序）
+### 1. 新增 TcpMultiplexer.cs
+**功能：** TCP多路复用实现
+- 单TCP连接上复用多个通道
+- 基于帧的传输协议（帧头8字节）
+- 通道ID识别不同数据流
+- 禁用Nagle算法降低延迟
 
-### 高优先级
-1. **UDP 协议支持** - 需要新增 UdpTunnelManager
-2. **TLS 加密传输** - 使用 SslStream 包装
-3. **配置热加载** - 运行时更新配置
-
-### 中优先级
-4. **HTTP/HTTPS 代理** - 支持域名访问
-5. **STCP/XTCP P2P 模式** - 点对点直连
-6. **压缩支持** - 使用 GZIP/Deflate
-
-### 低优先级
-7. **负载均衡**
-8. **带宽限制**
-9. **Web UI 管理界面**
-
-## Git 提交信息
-```
-feat: 集成连接池和健康检查，添加代理协议支持
-
-- 新增 ProxyProtocol.cs 实现 frp 握手机制
-- 改进 TunnelManager 集成 ConnectionPool 实际使用
-- 集成 HealthChecker 实现服务健康检查
-- 添加实时统计报告功能
-- 改进缓冲区大小提升性能
+**核心代码结构：**
+```csharp
+public class TcpMultiplexer {
+    public Task ConnectAsync()      // 建立多路复用连接
+    public Task<MuxChannel> OpenChannelAsync()  // 打开新通道
+    // 支持256个并发通道
+}
 ```
 
-## 总结
-本次改进重点解决了连接池和健康检查未被实际使用的问题，并添加了代理协议支持，使 NVevaAce 更接近 frp 的设计理念。下一步将开发 UDP 支持和 TLS 加密。
+### 2. 新增 BandwidthLimiter.cs
+**功能：** 带宽限制 + 负载均衡
+
+**带宽限制器：**
+- 基于令牌桶算法
+- 可配置速率（KB/s）
+- 突发容量支持
+- 统计信息（通过/限制字节数）
+
+**负载均衡器：**
+- 轮询 (RoundRobin)
+- 最少连接 (LeastConnections)
+- 加权轮询 (WeightedRoundRobin)
+- 随机 (Random)
+- 后端健康状态管理
+
+### 3. 更新 TunnelManager.cs
+集成新功能：
+```csharp
+// TCP多路复用
+if (_config.TcpMux) {
+    _tcpMultiplexer = new TcpMultiplexer(...);
+}
+
+// 带宽限制
+if (tunnel.BandwidthLimit > 0) {
+    _bandwidthLimiters[tunnel.LocalPort] = new BandwidthLimiter(...);
+}
+
+// 负载均衡
+if (tunnel.Backends?.Count > 1) {
+    _loadBalancers[tunnel.LocalPort] = new LoadBalancer(...);
+}
+```
+
+### 4. 更新 TunnelConfig.cs
+新增配置项：
+```csharp
+public int BandwidthLimit { get; set; } = 0;
+public int HealthCheckInterval { get; set; } = 10;
+public string? LoadBalanceStrategy { get; set; } = "round_robin";
+public List<BackendConfig>? Backends { get; set; }
+```
+
+### 5. 更新 appsettings.json
+添加新配置示例：
+```json
+{
+  "tcpMux": true,
+  "tunnels": [{
+    "bandwidthLimit": 1024,
+    "loadBalanceStrategy": "round_robin",
+    "backends": [
+      { "address": "127.0.0.1", "port": 8080, "weight": 1 }
+    ]
+  }]
+}
+```
+
+### 6. 更新 README.md
+- 添加新功能说明
+- 更新架构图
+- 更新功能对比表
+
+## 文件变更
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| TcpMultiplexer.cs | 新增 | TCP多路复用实现 |
+| BandwidthLimiter.cs | 新增 | 带宽限制+负载均衡 |
+| TunnelManager.cs | 修改 | 集成新功能 |
+| TunnelConfig.cs | 修改 | 添加配置项 |
+| appsettings.json | 修改 | 示例配置 |
+| README.md | 修改 | 文档更新 |
+
+## Git 提交
+
+```
+d34b9f6 feat: 添加TCP多路复用、带宽限制和负载均衡
+```
+
+**推送到远程：**
+```
+To https://github.com/FAFOLSDJAI/NVevaAce.git
+   a6dcdfc..d34b9f6  main -> main
+```
+
+## 定时任务更新
+
+Cron 任务已更新为每日下午3点执行：
+- 原执行时间：`0 */3 * * *` (每3小时)
+- 新执行时间：`0 15 * * *` (每日15:00)
+- 时区：Asia/Shanghai
+
+## 后续计划
+
+### v0.3.1 (近期)
+- [ ] 实现 TLS 加密传输
+- [ ] 完善认证流程
+- [ ] 添加压缩支持
+
+### v0.4.0 (中期)
+- [ ] UDP 协议支持
+- [ ] HTTP/HTTPS 代理
+- [ ] Web 管理界面
+
+### v0.5.0 (长期)
+- [ ] P2P 模式（XTCP）
+- [ ] 流量统计
+- [ ] 多用户支持
+
+## 架构对比
+
+### 改进后架构
+```
+┌─────────────┐
+│   Client    │
+└──────┬──────┘
+       │
+       ▼
+┌──────────────────────────────────────────────────────┐
+│                  TunnelManager                        │
+├──────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │
+│  │   TCP Mux   │  │ Bandwidth   │  │   Load      │  │
+│  │             │  │  Limiter    │  │  Balancer   │  │
+│  └─────────────┘  └─────────────┘  └─────────────┘  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │
+│  │   Connection│  │   Health    │  │   Control   │  │
+│  │    Pool     │  │   Checker   │  │  Connection │  │
+│  └─────────────┘  └─────────────┘  └─────────────┘  │
+└──────────────────────────────────────────────────────┘
+       │
+       ▼
+┌─────────────┐
+│ Remote Svr  │
+└─────────────┘
+```
+
+---
+*报告生成时间：2026-04-11 06:00 (Asia/Shanghai)*
+*下次自动执行：2026-04-11 15:00*
