@@ -19,6 +19,8 @@ namespace NVevaAce
         private readonly int _serverPort;
         private readonly bool _tlsEnable;
         private readonly bool _useEncryption;
+        private readonly string _certPath;
+        private readonly string? _certPassword;
         private readonly CryptoUtils? _crypto;
         private TcpClient? _tcpClient;
         private Stream? _stream;
@@ -27,14 +29,17 @@ namespace NVevaAce
         public Stream? Stream => _stream;
         public bool IsConnected => _tcpClient?.Connected ?? false;
 
-        public SecureConnection(ILogger logger, string serverAddr, int serverPort, 
-            bool tlsEnable, bool useEncryption, string token)
+        public SecureConnection(ILogger logger, string serverAddr, int serverPort,
+            bool tlsEnable, bool useEncryption, string token,
+            string certPath = "", string? certPassword = null)
         {
             _logger = logger;
             _serverAddr = serverAddr;
             _serverPort = serverPort;
             _tlsEnable = tlsEnable;
             _useEncryption = useEncryption;
+            _certPath = certPath;
+            _certPassword = certPassword;
 
             if (useEncryption && !string.IsNullOrEmpty(token))
             {
@@ -42,39 +47,54 @@ namespace NVevaAce
             }
         }
 
-        /// <summary>
-        /// 建立安全连接
-        /// </summary>
         public async Task<bool> ConnectAsync(CancellationToken ct = default)
         {
             try
             {
                 _tcpClient = new TcpClient();
                 _tcpClient.NoDelay = true;
-                
                 await _tcpClient.ConnectAsync(_serverAddr, _serverPort, ct).ConfigureAwait(false);
-                
+
                 if (_tlsEnable)
                 {
-                    // 使用 TLS 加密
+                    var sslOptions = new SslClientAuthenticationOptions
+                    {
+                        TargetHost = _serverAddr,
+                        EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
+                        RemoteCertificateValidationCallback = (sender, certificate, chain, errors) =>
+                        {
+                            // 加载自定义证书进行验证
+                            if (!string.IsNullOrEmpty(_certPath) && File.Exists(_certPath))
+                            {
+                                var customCert = new X509Certificate2(_certPath, _certPassword);
+                                var cert2 = certificate as X509Certificate2;
+                            return cert2 != null && cert2.Thumbprint == customCert.Thumbprint;
+                            }
+                            // 开发模式：接受自签名证书
+                            return errors == System.Net.Security.SslPolicyErrors.None
+                                || errors == System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors;
+                        }
+                    };
+
                     var sslStream = new SslStream(
                         _tcpClient.GetStream(),
                         false,
-                        (sender, certificate, chain, errors) => true // 接受所有证书
-                    );
-                    
-                    await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                        sslOptions.RemoteCertificateValidationCallback);
+
+                    // 客户端证书（如果配置了）
+                    if (!string.IsNullOrEmpty(_certPath) && File.Exists(_certPath))
                     {
-                        TargetHost = _serverAddr,
-                        EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12
-                    }).ConfigureAwait(false);
-                    
+                        var clientCert = new X509Certificate2(_certPath, _certPassword);
+                        sslOptions.ClientCertificates = new X509CertificateCollection { clientCert };
+                    }
+
+                    await sslStream.AuthenticateAsClientAsync(sslOptions).ConfigureAwait(false);
                     _stream = sslStream;
-                    _logger.Log("[TLS] 已建立 TLS 加密连接");
+
+                    _logger.Log($"[TLS] 已建立 TLS 加密连接 | 协议: {sslStream.SslProtocol}");
                 }
                 else if (_useEncryption && _crypto != null)
                 {
-                    // 使用自定义加密
                     _stream = new EncryptedStream(_tcpClient.GetStream(), _crypto, true);
                     _logger.Log("[加密] 已建立 AES-128-CFB 加密连接");
                 }
@@ -93,9 +113,6 @@ namespace NVevaAce
             }
         }
 
-        /// <summary>
-        /// 关闭连接
-        /// </summary>
         public void Close()
         {
             try
@@ -131,9 +148,12 @@ namespace NVevaAce
         private readonly bool _tlsEnable;
         private readonly bool _useEncryption;
         private readonly string _token;
+        private readonly string _certPath;
+        private readonly string? _certPassword;
 
         public SecureConnectionFactory(ILogger logger, string serverAddr, int serverPort,
-            bool tlsEnable, bool useEncryption, string token)
+            bool tlsEnable, bool useEncryption, string token,
+            string certPath = "", string? certPassword = null)
         {
             _logger = logger;
             _serverAddr = serverAddr;
@@ -141,19 +161,16 @@ namespace NVevaAce
             _tlsEnable = tlsEnable;
             _useEncryption = useEncryption;
             _token = token;
+            _certPath = certPath;
+            _certPassword = certPassword;
         }
 
-        /// <summary>
-        /// 创建新的安全连接
-        /// </summary>
         public SecureConnection Create()
         {
-            return new SecureConnection(_logger, _serverAddr, _serverPort, _tlsEnable, _useEncryption, _token);
+            return new SecureConnection(_logger, _serverAddr, _serverPort,
+                _tlsEnable, _useEncryption, _token, _certPath, _certPassword);
         }
 
-        /// <summary>
-        /// 创建加密的 NetworkStream
-        /// </summary>
         public async Task<Stream> CreateEncryptedStreamAsync(TcpClient client, CancellationToken ct = default)
         {
             if (_tlsEnable)
@@ -161,15 +178,22 @@ namespace NVevaAce
                 var sslStream = new SslStream(
                     client.GetStream(),
                     false,
-                    (sender, certificate, chain, errors) => true
-                );
-                
-                await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                    (sender, certificate, chain, errors) => true);
+
+                var options = new SslClientAuthenticationOptions
                 {
                     TargetHost = _serverAddr,
                     EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12
-                }).ConfigureAwait(false);
-                
+                };
+
+                if (!string.IsNullOrEmpty(_certPath) && File.Exists(_certPath))
+                {
+                    var clientCert = new X509Certificate2(_certPath, _certPassword);
+                    options.ClientCertificates = new X509CertificateCollection { clientCert };
+                }
+
+                await sslStream.AuthenticateAsClientAsync(options).ConfigureAwait(false);
+                _logger.Log($"[TLS] 已建立 TLS 流 | 协议: {sslStream.SslProtocol}");
                 return sslStream;
             }
             else if (_useEncryption && !string.IsNullOrEmpty(_token))
@@ -177,7 +201,6 @@ namespace NVevaAce
                 var crypto = new CryptoUtils(_token);
                 return new EncryptedStream(client.GetStream(), crypto, true);
             }
-            
             return client.GetStream();
         }
     }
