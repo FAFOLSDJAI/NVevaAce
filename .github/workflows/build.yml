@@ -38,10 +38,11 @@ jobs:
           dotnet publish NVevaAce.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
 
       - name: Create Release
+        id: create_release
         uses: softprops/action-gh-release@v1
         with:
           files: publish/NVevaAce.exe
+          tag_name: v0.3.1
           generate_release_notes: true
-          commitish: main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
