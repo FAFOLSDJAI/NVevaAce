@@ -15,6 +15,8 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -34,25 +36,6 @@ jobs:
       - name: Publish
         run: |
           dotnet publish NVevaAce/NVevaAce.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: NVevaAce-win-x64
-          path: publish/NVevaAce.exe
-          retention-days: 30
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: NVevaAce-win-x64
-          path: publish
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
