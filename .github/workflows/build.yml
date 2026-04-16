@@ -1,21 +1,64 @@
-name: CI-Workflow
+name: Build and Release
+
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v0.3.1)'
+        required: false
+        type: string
+
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
-      with:
-        lfs: true
-    - name: Setup Environment
-      run: echo "Setting up environment..."
-    - name: Verify Files
-      shell: pwsh
-      run: |
-        echo "Checking project structure..."
-        ls -R
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore NVevaAce.sln
+
+      - name: Build
+        run: dotnet build NVevaAce.sln -c Release --no-restore
+
+      - name: Publish
+        run: |
+          dotnet publish NVevaAce/NVevaAce.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NVevaAce-win-x64
+          path: publish/NVevaAce.exe
+          retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: NVevaAce-win-x64
+          path: publish
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: publish/NVevaAce.exe
+          generate_release_notes: true
+          commitish: main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
