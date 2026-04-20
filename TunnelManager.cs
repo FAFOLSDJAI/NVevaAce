@@ -357,8 +357,8 @@ namespace NVevaAce
                 bool useCompression = tunnel.UseCompression && _compression != null;
                 if (useCompression)
                 {
-                    clientStream = _compression.CreateCompressedStream(clientStream, Compression.CompressionMode.Compress);
-                    remoteStream = _compression.CreateCompressedStream(remoteStream, Compression.CompressionMode.Decompress);
+                    clientStream = _compression.CreateCompressedStream(clientStream, System.IO.Compression.CompressionMode.Compress);
+                    remoteStream = _compression.CreateCompressedStream(remoteStream, System.IO.Compression.CompressionMode.Decompress);
                 }
 
                 using (clientStream)
@@ -598,7 +598,7 @@ namespace NVevaAce
 
                 _connectionPool?.Dispose();
                 _tcpMultiplexer?.Dispose();
-                _compression?.Dispose();
+                // CompressionUtils 不实现 IDisposable，无需释放
 
                 _logger.Log($"服务已停止 (运行时长: {DateTime.Now - _startTime:hh\\:mm\\:ss})");
             }

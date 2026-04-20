@@ -204,6 +204,9 @@ namespace NVevaAce
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
             => await _inner.ReadAsync(buffer, offset, count, ct).ConfigureAwait(false);
 
+        public override void Write(byte[] buffer, int offset, int count)
+            => throw new NotSupportedException();
+
         public override void Flush() { }
 
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
@@ -311,32 +314,26 @@ namespace NVevaAce
         {
             if (!_isEncrypting)
             {
-                // 解密模式
-                lock (_readLock)
+                // 从网络读取加密数据（锁外执行）
+                var encryptedData = new byte[65536];
+                int bytesRead = await _inner.ReadAsync(encryptedData, 0, encryptedData.Length, cancellationToken).ConfigureAwait(false);
+                if (bytesRead <= 0) return 0;
+
+                // 解密
+                byte[] decrypted;
+                try
                 {
-                    // 从网络读取加密数据
-                    var encryptedData = new byte[65536];
-                    int bytesRead = await _inner.ReadAsync(encryptedData, 0, encryptedData.Length, cancellationToken).ConfigureAwait(false);
-                    if (bytesRead <= 0) return 0;
-
-                    // 解密
-                    byte[] decrypted;
-                    try
-                    {
-                        decrypted = _crypto.Decrypt(encryptedData);
-                    }
-                    catch
-                    {
-                        return 0;
-                    }
-
-                    // 返回请求的数据量
-                    var toReturn = Math.Min(decrypted.Length, count);
-                    Array.Copy(decrypted, 0, buffer, offset, toReturn);
-
-                    // 如果还有剩余，缓存（简化处理，实际可优化）
-                    return toReturn;
+                    decrypted = _crypto.Decrypt(encryptedData);
                 }
+                catch
+                {
+                    return 0;
+                }
+
+                // 返回请求的数据量
+                var toReturn = Math.Min(decrypted.Length, count);
+                Array.Copy(decrypted, 0, buffer, offset, toReturn);
+                return toReturn;
             }
 
             return await _inner.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
