@@ -172,7 +172,6 @@ NVevaAce/
 - ✅ **新功能**: TCP Mux 多路复用现已实际集成到数据传输流程
 - ✅ **新功能**: GZip 压缩现已实际集成到 TunnelManager
 - ✅ **新功能**: 运行时统计报告（流量/连接数/速率/运行时间）
-- ✅ **新功能**: GitHub Actions CI/CD 自动构建发布流程
 - ✅ **改进**: TcpMultiplexer 帧协议更完整（支持 WINDOW_UPDATE/CLOSE）
 - ✅ **改进**: 添加日志前缀标识改进可读性
 
