@@ -1,48 +1,90 @@
-name: Build and Release
+name: Build and Publish
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
   pull_request:
     branches: [ main ]
+  release:
+    types: [ published ]
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version (e.g., v0.3.1)'
-        required: false
-        type: string
 
 jobs:
   build:
     runs-on: windows-latest
+    
+    strategy:
+      matrix:
+        configuration: [Release]
+        platform: [x64, x86]
+        
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+        
+    - name: Restore dependencies
+      run: dotnet restore NVevaAce.sln
+      
+    - name: Build
+      run: dotnet build NVevaAce.sln --configuration ${{ matrix.configuration }} --no-restore
+      
+    - name: Run tests
+      if: matrix.platform == 'x64'
+      run: dotnet test --no-build --verbosity normal
+      
+    - name: Publish
+      run: |
+        dotnet publish NVevaAce/NVevaAce.csproj `
+          --configuration ${{ matrix.configuration }} `
+          --runtime win-${{ matrix.platform }} `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:IncludeNativeLibrariesForSelfExtract=true `
+          -o ./publish/win-${{ matrix.platform }}
+          
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: NVevaAce-win-${{ matrix.platform }}
+        path: ./publish/win-${{ matrix.platform }}/*
+
+  publish-release:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-
+      
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          NVevaAce-win-x86/*
+          NVevaAce-win-x64/*
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Restore dependencies
-        run: dotnet restore NVevaAce.sln
-
-      - name: Build
-        run: dotnet build NVevaAce.sln -c Release --no-restore
-
-      - name: Publish
-        run: |
-          dotnet publish NVevaAce.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
-
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: publish/NVevaAce.exe
-          tag_name: v0.3.1
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+        
+    - name: Check formatting
+      run: dotnet format --verify-no-changes --verbosity diagnostic NVevaAce.sln
+      continue-on-error: true

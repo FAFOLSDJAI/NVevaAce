@@ -27,7 +27,7 @@ namespace NVevaAce
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _serverAddr = serverAddr ?? throw new ArgumentNullException(nameof(serverAddr));
-            _serverPort = poolSize > 0 ? poolSize : 1;
+            _serverPort = serverPort;
             _poolSize = poolSize;
             _poolSemaphore = new SemaphoreSlim(poolSize, poolSize);
             
